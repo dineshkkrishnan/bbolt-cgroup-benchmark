@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Phase 4.3: real Collector persistent queue, not a synthetic bbolt opener."""
 import argparse
+import gzip
 import http.server
 import json
 import os
@@ -26,6 +27,8 @@ class Sink(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         size = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(size)
+        if self.headers.get("Content-Encoding", "").lower() == "gzip":
+            raw = gzip.decompress(raw)
         with lock:
             accept = state["accept"]
             key = "accepted_requests" if accept else "rejected_requests"
@@ -174,9 +177,11 @@ def main():
                 run_collector(name, directory, memory)
                 health_s = wait_health()
                 time.sleep(3)
-                inspection = cmd("docker", "exec", name, "sh", "-c",
-                    "cat /sys/fs/cgroup/memory.stat; echo EVENTS; cat /sys/fs/cgroup/memory.events; echo IO; cat /sys/fs/cgroup/io.stat",
+                inspection = cmd("docker", "inspect", "--format",
+                    "{{.State.Status}} oom={{.State.OOMKilled}} pid={{.State.Pid}}", name,
                     check=False)
+                cg = cmd("docker", "exec", name, "/otelcol-contrib", "--version", check=False)
+                inspection.stdout += "\\ncollector_version: " + cg.stdout + cg.stderr
                 logs = cmd("docker", "logs", name, check=False)
                 (RESULTS/f"{memory}-{cache}.logs").write_text(logs.stdout+"\n"+logs.stderr)
                 (RESULTS/f"{memory}-{cache}.cgroup.txt").write_text(inspection.stdout+"\n"+inspection.stderr)
