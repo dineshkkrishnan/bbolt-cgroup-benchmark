@@ -1,0 +1,48 @@
+name: Phase 4.5 repeated Collector recovery and freelist metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: OTLP records to persist
+        required: false
+        default: '200000'
+      repeats:
+        description: Repetitions per memory and cache condition
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  collector-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare benchmark environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase45
+          python3 -m py_compile scripts/phase45_collector.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker pull ubuntu:24.04
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase45/environment.txt
+          docker image inspect otel/opentelemetry-collector-contrib:0.140.0 --format '{{.Id}}' > results/phase45/image-id.txt
+      - name: Inspect real bbolt metadata and repeat restart comparisons
+        shell: bash
+        env:
+          PHASE45_RECORDS: ${{ inputs.records }}
+          PHASE45_REPEATS: ${{ inputs.repeats }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase45_collector.py 2>&1 | tee results/phase45/console.log
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-5-recovery-results
+          path: results/phase45/
+          retention-days: 14
