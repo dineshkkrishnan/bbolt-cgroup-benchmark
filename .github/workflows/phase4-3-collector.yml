@@ -24,6 +24,7 @@ jobs:
           mkdir -p results/phase43
           python3 -m py_compile scripts/phase43_collector.py
           docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker pull ubuntu:24.04
           docker image inspect otel/opentelemetry-collector-contrib:0.140.0 --format '{{.Id}}' > results/phase43/image-id.txt
           docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase43/environment.txt
       - name: Populate real persistent queue and test restarts
