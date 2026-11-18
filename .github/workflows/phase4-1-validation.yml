@@ -1,0 +1,112 @@
+name: Phase 4.1 file_storage recovery validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v5
+      - name: Checkout upstream package
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/open-telemetry/opentelemetry-collector-contrib.git upstream
+          cd upstream
+          git sparse-checkout set extension/storage/filestorage
+          git rev-parse HEAD > ../upstream-commit.txt
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - name: Compile upstream integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scratch results
+          cp phase4/filestorage_phase41_test.go upstream/extension/storage/filestorage/phase41_integration_test.go
+          (cd upstream/extension/storage/filestorage && GOWORK=off CGO_ENABLED=0 go test -c -o "$GITHUB_WORKSPACE/scratch/filestorage-phase41.test" .)
+          cp upstream-commit.txt results/upstream-commit.txt
+          { uname -a; go version; docker info --format 'Cgroup: {{.CgroupVersion}}'; } > results/environment.txt
+          test "$(docker info --format '{{.CgroupVersion}}')" = "2"
+          bash -n scripts/run-phase4-1.sh
+      - name: Seed two databases outside constrained containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scratch/seeds
+          for persist in false true; do
+            PHASE41_MODE=seed PHASE41_PERSIST="$persist" PHASE41_DB="$PWD/scratch/seeds/$persist.db" \
+              ./scratch/filestorage-phase41.test -test.run '^TestPhase41SeedOrRecover$' -test.v -test.timeout 20m > "results/seed-$persist.log" 2>&1
+            stat -c '%s' "scratch/seeds/$persist.db" > "results/seed-$persist.bytes"
+            sha256sum "scratch/seeds/$persist.db" > "results/seed-$persist.sha256"
+          done
+      - name: Repeat recovery-only measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ubuntu:24.04
+          # Each container gets a fresh copy of the same seed file.
+          # Rotate order between repetitions to mitigate temporal bias.
+          for repeat in 1 2 3 4 5; do
+            if (( repeat % 2 )); then
+              configurations=(256-false 1024-true 1024-false 256-true)
+            else
+              configurations=(256-true 1024-false 1024-true 256-false)
+            fi
+            for config in "${configurations[@]}"; do
+              IFS=- read -r mib persist <<< "$config"
+              id="r${repeat}-${mib}-${persist}"
+              mkdir -p "scratch/work-$id"
+              cp "scratch/seeds/$persist.db" "scratch/work-$id/collector.db"
+              docker run --rm --network none --memory "${mib}m" --memory-swap "${mib}m" \
+                -e PHASE41_CASE="$id" -e PHASE41_MEMORY_MIB="$mib" -e PHASE41_PERSIST="$persist" \
+                -v "$PWD/scratch:/bench:ro" \
+                -v "$PWD/scratch/work-$id:/work:rw" \
+                -v "$PWD/results:/out:rw" \
+                -v "$PWD/scripts/run-phase4-1.sh:/run-phase4-1.sh:ro" \
+                --entrypoint /bin/bash ubuntu:24.04 /run-phase4-1.sh
+              rm -f "scratch/work-$id/collector.db"
+            done
+          done
+      - name: Validate and summarize 20 measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,re,statistics
+          from pathlib import Path
+          root=Path("results")
+          samples=[]
+          for p in sorted(root.glob("r*-*/test.log")):
+              txt=p.read_text()
+              match=re.search(r"PHASE41_RESULT (\{[^\n]+\})",txt)
+              if not match: raise RuntimeError(f"No result in {p}")
+              x=json.loads(match.group(1))
+              mib=int(x['case'].split('-')[1])
+              x['limit_mib']=mib
+              samples.append(x)
+          assert len(samples)==20, f"Expected 20 results, got {len(samples)}"
+          groups={}
+          for x in samples:
+              key=f"{x['limit_mib']}MiB_persisted_{x['persisted_seed']}"
+              groups.setdefault(key,[]).append(x['open_ms'])
+          assert len(groups)==4 and all(len(v)==5 for v in groups.values())
+          medians={k:statistics.median(v) for k,v in groups.items()}
+          summary={'samples':samples,'medians_ms':medians,
+            'limitations':'Host page cache and file copy cache uncontrolled; separate seed and recovery; 5 repetitions per cell; startup counters measured inside test around newClient.'}
+          (root/'phase41-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print(json.dumps(medians,indent=2))
+          PY
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-1-validation-results
+          path: results/
+          retention-days: 14
