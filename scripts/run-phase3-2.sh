@@ -38,4 +38,3 @@ cat "$cg/memory.peak" > /out/memory.peak
 cat "$cg/memory.stat" > /out/final.memory.stat
 cat "$cg/memory.events" > /out/final.memory.events
 cat "$cg/io.stat" > /out/final.io.stat
-python3 /bench/summarize.py /out
