@@ -1,4 +1,4 @@
-name: bbolt cgroup-constrained read benchmark
+name: bbolt cgroup pressure pilot (Phase 3.1)
 
 on:
   workflow_dispatch:
@@ -7,9 +7,9 @@ permissions:
   contents: read
 
 jobs:
-  constrained-reads:
+  pressure-pilot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -17,13 +17,12 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Check Docker and cgroup v2 support
+      - name: Verify Docker cgroup v2
         shell: bash
         run: |
           set -euo pipefail
           docker version
           test -f /sys/fs/cgroup/cgroup.controllers
-          docker info --format 'Cgroup version: {{.CgroupVersion}}'
           test "$(docker info --format '{{.CgroupVersion}}')" = "2"
           mkdir -p results scratch
           {
@@ -33,34 +32,57 @@ jobs:
             cat /proc/self/cgroup
           } > results/environment.txt
 
-      - name: Build static Linux binaries
-        run: |
-          go mod tidy
-          CGO_ENABLED=0 go build -o scratch/bbolt-fill .
-          CGO_ENABLED=0 go build -o scratch/bbolt-read ./cmd/readbench
-
-      - name: Run verified cgroup-limited read tests
+      - name: Build benchmark and memory pressure helper
         shell: bash
         run: |
           set -euo pipefail
-          echo 'Synthetic database read benchmark; NOT a Collector queue reproduction.' > results/limitations.txt
-          echo 'No cold-cache controls; shared GitHub runner page cache may affect results.' >> results/limitations.txt
-          echo 'memory.max is checked from inside each Docker container.' >> results/limitations.txt
+          go mod tidy
+          CGO_ENABLED=0 go build -o scratch/bbolt-fill .
+          CGO_ENABLED=0 go build -o scratch/bbolt-read ./cmd/readbench
+          CGO_ENABLED=0 go build -o scratch/bbolt-pressure ./cmd/pressure
+          bash -n scripts/run-pressure-case.sh
+
+      - name: Run startup and read experiments with and without pressure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > results/limitations.txt <<'EOF'
+          Phase 3.1 synthetic diagnostic only; not a Collector queue reproduction.
+          Anonymous memory pressure holds 60% of memory.max; controls hold 0%.
+          cgroup memory.max and >=50% memory.current are verified for pressured runs.
+          Reclaim is NOT assumed: inspect pgscan, pgsteal, workingset_refault_file,
+          memory.events, memory.peak and io.stat differences before claiming thrash.
+          GitHub-hosted runner page cache is not cold-cache controlled.
+          bbolt-fill -mode open uses read-write bbolt.Open for startup reconstruction.
+          bbolt-read uses read-only bbolt.Open for read workloads.
+          Runs are sequential, not randomized; pilot only (2 repetitions).
+          EOF
+          docker pull ubuntu:24.04
           for count in 100000 300000; do
             for persisted in false true; do
               db="queue-${count}-persisted-${persisted}.db"
               ./scratch/bbolt-fill -mode fill -db "$PWD/scratch/$db" -items "$count" -value-bytes 1700 -sync-freelist="$persisted" -fsync=true > "results/fill-${count}-persisted-${persisted}.json"
               for mib in 256 512 1024; do
-                for pattern in sequential random; do
-                  for repeat in 1 2 3; do
-                    bytes=$((mib*1024*1024))
-                    out="results/read-${count}-persisted-${persisted}-${mib}MiB-${pattern}-r${repeat}.json"
-                    docker run --rm --network none --memory "${mib}m" --memory-swap "${mib}m" \
-                      -v "$PWD/scratch:/bench:ro" \
-                      --entrypoint /bench/bbolt-read ubuntu:24.04 \
-                      -db "/bench/$db" -items "$count" -passes 2 -pattern "$pattern" \
-                      -expected-memory-bytes "$bytes" > "$out"
-                    echo "Completed: $out"
+                for pressure in 0 60; do
+                  for mode in startup sequential random; do
+                    for repeat in 1 2; do
+                      if [[ "$mode" == "startup" ]]; then
+                        actual_mode="startup"
+                        pattern="sequential"
+                      else
+                        actual_mode="read"
+                        pattern="$mode"
+                      fi
+                      id="${count}-persisted-${persisted}-${mib}MiB-p${pressure}-${mode}-r${repeat}"
+                      docker run --rm --network none --memory "${mib}m" --memory-swap "${mib}m" \
+                        -e CASE_ID="$id" -e MEMORY_BYTES="$((mib*1024*1024))" \
+                        -e DB_FILE="$db" -e ITEMS="$count" -e MODE="$actual_mode" \
+                        -e PATTERN="$pattern" -e PRESSURE_PERCENT="$pressure" \
+                        -v "$PWD/scratch:/bench:rw" -v "$PWD/results:/out:rw" \
+                        -v "$PWD/scripts/run-pressure-case.sh:/run-pressure-case.sh:ro" \
+                        --entrypoint /bin/bash ubuntu:24.04 /run-pressure-case.sh
+                      echo "Completed $id"
+                    done
                   done
                 done
               done
@@ -68,10 +90,10 @@ jobs:
             done
           done
 
-      - name: Upload measurements and environment
+      - name: Upload raw metrics (including partial results on failure)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bbolt-cgroup-read-results
+          name: bbolt-phase3-1-pressure-results
           path: results/
           retention-days: 14
