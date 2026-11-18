@@ -15,7 +15,7 @@ import urllib.request
 
 IMAGE = os.environ.get("PHASE44_IMAGE", "otel/opentelemetry-collector-contrib:0.140.0")
 ROOT = Path(os.environ.get("PHASE44_ROOT", "scratch/phase44")).resolve()
-CONFIG = Path("phase4/collector43.yaml").resolve()
+CONFIG = Path("phase4/collector44.yaml").resolve()
 RESULTS = Path("results/phase44").resolve()
 RECORDS = int(os.environ.get("PHASE44_RECORDS", "200000"))
 BATCH = int(os.environ.get("PHASE44_BATCH", "100"))
