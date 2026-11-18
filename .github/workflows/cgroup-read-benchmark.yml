@@ -1,0 +1,77 @@
+name: bbolt cgroup-constrained read benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  constrained-reads:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check Docker and cgroup v2 support
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          test -f /sys/fs/cgroup/cgroup.controllers
+          docker info --format 'Cgroup version: {{.CgroupVersion}}'
+          test "$(docker info --format '{{.CgroupVersion}}')" = "2"
+          mkdir -p results scratch
+          {
+            uname -a
+            go version
+            docker info --format 'Cgroup driver: {{.CgroupDriver}}, version: {{.CgroupVersion}}'
+            cat /proc/self/cgroup
+          } > results/environment.txt
+
+      - name: Build static Linux binaries
+        run: |
+          go mod tidy
+          CGO_ENABLED=0 go build -o scratch/bbolt-fill .
+          CGO_ENABLED=0 go build -o scratch/bbolt-read ./cmd/readbench
+
+      - name: Run verified cgroup-limited read tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Synthetic database read benchmark; NOT a Collector queue reproduction.' > results/limitations.txt
+          echo 'No cold-cache controls; shared GitHub runner page cache may affect results.' >> results/limitations.txt
+          echo 'memory.max is checked from inside each Docker container.' >> results/limitations.txt
+          for count in 100000 300000; do
+            for persisted in false true; do
+              db="queue-${count}-persisted-${persisted}.db"
+              ./scratch/bbolt-fill -mode fill -db "$PWD/scratch/$db" -items "$count" -value-bytes 1700 -sync-freelist="$persisted" -fsync=true > "results/fill-${count}-persisted-${persisted}.json"
+              for mib in 256 512 1024; do
+                for pattern in sequential random; do
+                  for repeat in 1 2 3; do
+                    bytes=$((mib*1024*1024))
+                    out="results/read-${count}-persisted-${persisted}-${mib}MiB-${pattern}-r${repeat}.json"
+                    docker run --rm --network none --memory "${mib}m" --memory-swap "${mib}m" \
+                      -v "$PWD/scratch:/bench:ro" \
+                      --entrypoint /bench/bbolt-read ubuntu:24.04 \
+                      -db "/bench/$db" -items "$count" -passes 2 -pattern "$pattern" \
+                      -expected-memory-bytes "$bytes" > "$out"
+                    echo "Completed: $out"
+                  done
+                done
+              done
+              rm -f "scratch/$db"
+            done
+          done
+
+      - name: Upload measurements and environment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-cgroup-read-results
+          path: results/
+          retention-days: 14
