@@ -1,4 +1,4 @@
-# bbolt cgroup-memory microbenchmark (initial scaffold)
+# bbolt cgroup-memory microbenchmark
 
 For https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/52868
 
@@ -54,8 +54,18 @@ The `-sync-freelist` option for `open` should remain false to match `file_storag
 - The `fill` mode writes a synthetic dataset, not a faithful Collector persistent-queue workload. The benchmark is diagnostic, not proof of production performance.
 - `NoSync` is deliberately configurable. For durability experiments, distinguish process kill from host power loss.
 
-## Next implementation tasks
-1. Add a subprocess workload mode for sequential/random Get and repeated reads.
-2. Add an outer Linux cgroup sampler with timestamps and CSV output.
-3. Run a size matrix (100k, 300k, 1m items) and memory matrix (256 MiB, 512 MiB, 1 GiB).
-4. Compare against a real `file_storage` workload and proposed implementation when available.
+## Phase 3.1: controlled-pressure pilot
+Run [the opt-in workflow](https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/workflows/cgroup-read-benchmark.yml) using **Actions → bbolt cgroup pressure pilot (Phase 3.1) → Run workflow → main**. Download the `bbolt-phase3-1-pressure-results` artifact.
+
+- The workflow builds three static Linux executables: `bbolt-fill`, `bbolt-read`, and `bbolt-pressure`.
+- It populates 100K/300K-record databases on the host, then runs separate startup-only and sequential/random-read container processes with 256/512/1024 MiB `memory.max`, with 0% (control) or 60% (resident anonymous allocation) pressure, twice per configuration.
+- The wrapper verifies the exact cgroup v2 `memory.max` and, for pressured cases, verifies `memory.current` reaches at least 50% of that limit before starting work. This validates the *allocation*, not necessarily active reclaim.
+- For each container, inspect `.memory.stat.prework` vs `.memory.stat.after` (`pgscan`, `pgsteal`, `workingset_refault_file`), `.memory.events.prework` vs `.memory.events.after` (`high`, `max`, `oom`), `.io.stat.prework` vs `.io.stat.after` (`rbytes`, `rios`), and `.memory.peak`. The `.json` file reports process timing/faults; `.meta` reports limit and pressure state.
+- Startup uses read-write `bolt.Open` (`bbolt-fill -mode open`), which can reconstruct an unsynced freelist. Read tests use read-only `bolt.Open`, so **do not** compare their open times as if they measured identical startup paths.
+- Shared-runner host page cache is uncontrolled; pressure may not cause reclaim. **Do not claim thrashing unless reclaim/refault and I/O counters support it.** These are synthetic tests, not a faithful Collector persistent queue workload.
+- Runs are sequential and only twice repeated; this is a pilot. A more rigorous follow-up needs randomized order, more repetitions, controlled cache state, and actual Collector `file_storage` workload.
+
+## Remaining work
+1. Verify the new GitHub Actions run and inspect all per-container memory limits and counter deltas.
+2. Improve the pressure model if `pgscan`/`workingset_refault_file` remain zero.
+3. Compare against a real `file_storage` queue workload and the proposed implementation.
