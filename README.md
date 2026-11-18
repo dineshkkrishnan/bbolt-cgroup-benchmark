@@ -80,3 +80,12 @@ This *new, separate workflow* does not modify Phase 3.1. It creates a 200,000-re
 The workflow saves `memory.stat`, `memory.events`, `io.stat`, `memory.current`, and `memory.peak` snapshots, per-run JSON measurements, and `assessment.json`. The assessment requires **positive deltas** in `pgscan`, `pgsteal`, and `workingset_refault_file` between the end of database population and the end of reads before labeling the pilot qualified for follow-up. The workflow **does not fail solely because pressure was inconclusive**; it reports `qualified_for_followup: false`. An OOM or a missing result is a genuine failure.
 
 **Limitations:** This experiment establishes whether the container exhibits reclaim and refaults, not whether bbolt itself causes pathological thrashing. It lacks an independent control, cold-cache isolation, randomized order, and production Collector queue semantics. No conclusion about OpenTelemetry issue #52868 should be posted without analyzing the raw counters and performing follow-up controls.
+
+
+## Phase 3.3: paired 256 MiB versus 1 GiB comparison
+
+Run the [Phase 3.3 comparison workflow](https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/workflows/phase3-3-comparison.yml) manually on `main`. Artifact: `bbolt-phase3-3-comparison-results`.
+
+The workflow executes four independent Docker containers in ABBA order (256, 1024, 1024, 256 MiB), with swap capped at the same limit. Each container generates its own 200K-record bbolt database within its cgroup, then runs two random and two sequential read tests (three full passes each). Pattern order alternates within each container. It collects raw per-run `memory.stat`, `memory.events`, and `io.stat` snapshots and produces `comparison.json` with median read durations and 256/1024 ratios.
+
+**Interpretation:** This is a synthetic memory-limit comparison, not a causal freelist benchmark. The 1 GiB condition may fit the ~400 MiB database, while 256 MiB cannot; compare reclaim/refault and disk-read deltas alongside latency. Container creation and host cache are not isolated across tests, so ABBA order only partially mitigates order effects. Do not claim statistical significance from two containers per limit, and do not post a production Collector performance claim from this pilot alone.
