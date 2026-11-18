@@ -57,6 +57,11 @@ def wait_health(timeout=90):
     raise RuntimeError("Collector did not become healthy")
 
 def run_collector(name, directory, memory_mib):
+    for folder in [directory, *[x for x in directory.rglob("*") if x.is_dir()]]:
+        folder.chmod(0o777)
+    for file in directory.rglob("*"):
+        if file.is_file():
+            file.chmod(0o666)
     cmd("docker", "rm", "-f", name, check=False)
     return cmd("docker", "run", "-d", "--name", name, "--network", "host",
         "--memory", f"{memory_mib}m", "--memory-swap", f"{memory_mib}m",
