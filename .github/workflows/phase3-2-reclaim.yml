@@ -1,0 +1,85 @@
+name: bbolt Phase 3.2 reclaim and refault pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reclaim-pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and verify environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker info --format '{{.CgroupVersion}}')" = "2"
+          mkdir -p scratch results
+          go mod tidy
+          CGO_ENABLED=0 go build -o scratch/bbolt-fill .
+          CGO_ENABLED=0 go build -o scratch/bbolt-read ./cmd/readbench
+          bash -n scripts/run-phase3-2.sh
+          {
+            uname -a
+            go version
+            docker info --format 'Cgroup: {{.CgroupVersion}} / {{.CgroupDriver}}'
+          } > results/environment.txt
+      - name: Run 256 MiB oversized database pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ubuntu:24.04
+          docker run --rm --network none --memory 256m --memory-swap 256m \
+            -v "$PWD/scratch:/bench:ro" \
+            -v "$PWD/scratch:/work:rw" \
+            -v "$PWD/results:/out:rw" \
+            -v "$PWD/scripts/run-phase3-2.sh:/run-phase3-2.sh:ro" \
+            --entrypoint /bin/bash ubuntu:24.04 /run-phase3-2.sh
+      - name: Validate reclaim and refault evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path("results")
+          def counters(name):
+              return {k:int(v) for k,v in (line.split() for line in (p/name).read_text().splitlines() if len(line.split())==2)}
+          before=counters("postfill.memory.stat")
+          after=counters("final.memory.stat")
+          metrics=["pgscan","pgsteal","workingset_refault_file","pgmajfault"]
+          delta={k:after.get(k,0)-before.get(k,0) for k in metrics}
+          memory_max=int((p/"memory.max").read_text())
+          db_size=int((p/"database.bytes").read_text())
+          runs=list(p.glob("*-r[1-4].json"))
+          evidence={
+              "memory_max_bytes":memory_max,
+              "database_bytes":db_size,
+              "read_run_count":len(runs),
+              "counter_deltas_postfill_to_final":delta,
+              "reclaim_observed":delta["pgscan"]>0 and delta["pgsteal"]>0,
+              "refault_observed":delta["workingset_refault_file"]>0,
+              "qualified_for_followup":delta["pgscan"]>0 and delta["pgsteal"]>0 and delta["workingset_refault_file"]>0
+          }
+          (p/"assessment.json").write_text(json.dumps(evidence,indent=2)+"\n")
+          print(json.dumps(evidence,indent=2))
+          assert memory_max==256*1024*1024
+          assert db_size>memory_max
+          assert len(runs)==8, f"Expected 8 read experiments, got {len(runs)}"
+          if not evidence["qualified_for_followup"]:
+              print("INCONCLUSIVE: no validated reclaim+refault; do not claim thrashing.")
+          PY
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase3-2-reclaim-results
+          path: results/
+          retention-days: 14
