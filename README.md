@@ -100,3 +100,12 @@ Unlike Phases 1–3, this compiles an opt-in test **inside the upstream OpenTele
 Four independent 256/1024 MiB Docker runs cover both seed freelist modes. Each run collects cgroup `memory.stat`, `memory.events`, `io.stat`, peak memory, database size, measured `newClient` startup time, and sampled `Get` duration. Results include the upstream Git SHA.
 
 **Scope and limitations:** This exercises the real extension client code, but **not** the Collector service or persistent queue, nor a realistic churned freelist. Seeding is a synthetic, append-only workload. There is only one run per cell; no causal/statistical conclusion is warranted. Seed generation is inside the constrained container and may be slow or fail at 256 MiB. Compilation happens outside the cgroup to avoid conflating Go compiler memory with the runtime. The workflow is opt-in and not yet validated on a runner. Do not publish a maintainer performance claim until the workflow runs and raw data are reviewed.
+
+
+## Phase 4.1: validate upstream client startup (opt-in)
+
+[Run Phase 4.1 workflow](https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/workflows/phase4-1-validation.yml) on `main`. Artifact: `bbolt-phase4-1-validation-results`.
+
+This follow-up separates database creation from recovery. It builds the actual upstream `filestorage` package integration test, seeds two 200K-record databases **outside** constrained containers (with/without freelist persistence), then copies each seed into a fresh work directory for each recovery-only container. Five repetitions per combination of 256 MiB / 1 GiB and persisted / non-persisted seed yield 20 independent recovery processes. The test measures `newClient` latency and cgroup `memory.stat`, `memory.events`, `io.stat`, and `memory.current` immediately around `newClient`, before three sample `Get` calls. The workflow records seed checksums, upstream commit, per-run logs, and a summary with medians.
+
+**Important caveats:** Repeated host-side file copies can warm the shared runner's page cache. The copies are not a controlled cold-cache protocol, and the sample count does not establish production causality. The test is not a full Collector queue startup; its synthetic append-only seed does not reproduce real freelist churn. Treat latency ratios as exploratory until cache effects are controlled. No upstream issue comment is posted automatically.
