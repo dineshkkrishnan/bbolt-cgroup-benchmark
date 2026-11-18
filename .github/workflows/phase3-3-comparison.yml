@@ -1,0 +1,102 @@
+name: bbolt Phase 3.3 memory-limit comparison
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build binaries and validate cgroup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker info --format '{{.CgroupVersion}}')" = "2"
+          mkdir -p scratch results
+          go mod tidy
+          CGO_ENABLED=0 go build -o scratch/bbolt-fill .
+          CGO_ENABLED=0 go build -o scratch/bbolt-read ./cmd/readbench
+          bash -n scripts/run-phase3-3.sh
+          { uname -a; go version; docker info --format 'Cgroup: {{.CgroupVersion}}'; } > results/environment.txt
+      - name: Run paired experiments in ABBA memory-limit order
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ubuntu:24.04
+          # Two independent containers per limit. Each generates its own DB.
+          # ABBA order reduces (but does not eliminate) host/cache time trends.
+          for spec in a-256 b-1024 c-1024 d-256; do
+            id="${spec%%-*}"
+            mib="${spec##*-}"
+            mkdir -p "scratch/$id"
+            docker run --rm --network none --memory "${mib}m" --memory-swap "${mib}m" \
+              -e CASE_ID="$spec" -e MEMORY_MIB="$mib" \
+              -v "$PWD/scratch:/bench:ro" \
+              -v "$PWD/scratch/$id:/work:rw" \
+              -v "$PWD/results:/out:rw" \
+              -v "$PWD/scripts/run-phase3-3.sh:/run-phase3-3.sh:ro" \
+              --entrypoint /bin/bash ubuntu:24.04 /run-phase3-3.sh
+            rm -f "scratch/$id/queue.db"
+          done
+      - name: Summarize performance and pressure counters
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, statistics
+          from pathlib import Path
+          root=Path('results')
+          def stat(p):
+              return {a:int(b) for line in p.read_text().splitlines() if len(parts:=line.split())==2 for a,b in [parts]}
+          def io(p):
+              total={'rbytes':0,'rios':0}
+              for line in p.read_text().splitlines():
+                  for token in line.split()[1:]:
+                      if '=' in token:
+                          k,v=token.split('=',1)
+                          if k in total: total[k]+=int(v)
+              return total
+          result=[]
+          for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+              limit=int((folder/'memory.max').read_text())
+              db_size=int((folder/'database.bytes').read_text())
+              before=stat(folder/'postfill.memory.stat')
+              after=stat(folder/'final.memory.stat')
+              deltas={k:after.get(k,0)-before.get(k,0) for k in ('pgscan','pgsteal','workingset_refault_file','pgmajfault')}
+              i0,i1=io(folder/'postfill.io.stat'),io(folder/'final.io.stat')
+              timings={}
+              for pattern in ('random','sequential'):
+                  runs=[json.loads((folder/f'{pattern}-r{n}.json').read_text()) for n in (1,2)]
+                  timings[pattern]=[r['read_ms'] for r in runs]
+              result.append({'case':folder.name,'limit_mib':limit//1048576,'db_bytes':db_size,'timings_ms':timings,'counter_deltas':deltas,'io_read_bytes':i1['rbytes']-i0['rbytes'],'io_read_ops':i1['rios']-i0['rios']})
+          assert len(result)==4, f'Expected four containers, got {len(result)}'
+          assert sorted(r['limit_mib'] for r in result)==[256,256,1024,1024]
+          for r in result:
+              assert all(len(v)==2 for v in r['timings_ms'].values())
+          comparisons={}
+          for pattern in ('random','sequential'):
+              med={}
+              for limit in (256,1024):
+                  samples=[v for r in result if r['limit_mib']==limit for v in r['timings_ms'][pattern]]
+                  med[str(limit)]=statistics.median(samples)
+              comparisons[pattern]={'median_256_ms':med['256'],'median_1024_ms':med['1024'],'ratio_256_over_1024':med['256']/med['1024'] if med['1024'] else None}
+          summary={'cases':result,'comparisons':comparisons,'note':'Synthetic workload; uncontrolled host page cache; no causal attribution to freelist reconstruction.'}
+          (root/'comparison.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print(json.dumps(comparisons,indent=2))
+          PY
+      - name: Upload raw data even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase3-3-comparison-results
+          path: results/
+          retention-days: 14
