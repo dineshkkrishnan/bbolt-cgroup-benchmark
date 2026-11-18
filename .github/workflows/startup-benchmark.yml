@@ -1,0 +1,60 @@
+name: bbolt initial startup comparison
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Resolve dependencies and build benchmark
+        run: |
+          go mod tidy
+          go build -o bbolt-bench .
+      - name: Run independent process startup measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          {
+            echo "GitHub run: $GITHUB_RUN_ID"
+            uname -a
+            go version
+            free -h
+            echo "cgroup:"
+            cat /proc/self/cgroup
+            echo "cgroup memory.max:"
+            cat /sys/fs/cgroup/memory.max 2>/dev/null || true
+          } > results/environment.txt
+
+          for sync in false true; do
+            for count in 10000 50000; do
+              db="results/queue-${count}-sync-${sync}.db"
+              ./bbolt-bench -mode fill -db "$db" -items "$count" -value-bytes 1700 -sync-freelist="$sync" -fsync=true > "results/fill-${count}-sync-${sync}.json"
+              for repeat in 1 2 3; do
+                ./bbolt-bench -mode open -db "$db" -items "$count" -value-bytes 1700 -sync-freelist="$sync" -fsync=true > "results/open-${count}-sync-${sync}-repeat-${repeat}.json"
+              done
+              rm -f "$db"
+            done
+          done
+          printf '%s\n' 'Initial measurements (warm/unspecified cache; not a cgroup pressure test):'
+          for file in results/open-*.json; do
+            echo "$file"
+            cat "$file"
+          done
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-initial-startup-results
+          path: results/
+          retention-days: 14
