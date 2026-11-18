@@ -69,3 +69,14 @@ Run [the opt-in workflow](https://github.com/dineshkkrishnan/bbolt-cgroup-benchm
 1. Verify the new GitHub Actions run and inspect all per-container memory limits and counter deltas.
 2. Improve the pressure model if `pgscan`/`workingset_refault_file` remain zero.
 3. Compare against a real `file_storage` queue workload and the proposed implementation.
+
+
+## Phase 3.2: focused oversized-database reclaim pilot
+
+Run [Phase 3.2 GitHub Actions](https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/workflows/phase3-2-reclaim.yml) manually on `main`. Download artifact `bbolt-phase3-2-reclaim-results`.
+
+This *new, separate workflow* does not modify Phase 3.1. It creates a 200,000-record, 1700-byte/value bbolt file **inside** a Docker container capped at 256 MiB (swap also capped at 256 MiB), verifies the database file is larger than `memory.max`, and performs four random and four sequential read runs (three passes each). Creating the database in the container is intended to charge its page cache to the tested cgroup; it is still a host bind mount, not a controlled cold-cache environment.
+
+The workflow saves `memory.stat`, `memory.events`, `io.stat`, `memory.current`, and `memory.peak` snapshots, per-run JSON measurements, and `assessment.json`. The assessment requires **positive deltas** in `pgscan`, `pgsteal`, and `workingset_refault_file` between the end of database population and the end of reads before labeling the pilot qualified for follow-up. The workflow **does not fail solely because pressure was inconclusive**; it reports `qualified_for_followup: false`. An OOM or a missing result is a genuine failure.
+
+**Limitations:** This experiment establishes whether the container exhibits reclaim and refaults, not whether bbolt itself causes pathological thrashing. It lacks an independent control, cold-cache isolation, randomized order, and production Collector queue semantics. No conclusion about OpenTelemetry issue #52868 should be posted without analyzing the raw counters and performing follow-up controls.
