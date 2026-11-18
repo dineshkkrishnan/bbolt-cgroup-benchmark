@@ -1,0 +1,63 @@
+name: Phase 4 upstream file_storage integration pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-filestorage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Checkout upstream filestorage module (sparse)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/open-telemetry/opentelemetry-collector-contrib.git upstream
+          cd upstream
+          git sparse-checkout set extension/storage/filestorage
+          git rev-parse HEAD > ../upstream-commit.txt
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - name: Compile actual upstream filestorage integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scratch results
+          cp phase4/filestorage_phase4_test.go upstream/extension/storage/filestorage/phase4_integration_test.go
+          cd upstream/extension/storage/filestorage
+          GOWORK=off CGO_ENABLED=0 go test -c -o "$GITHUB_WORKSPACE/scratch/filestorage-phase4.test" .
+          cd "$GITHUB_WORKSPACE"
+          cp upstream-commit.txt results/upstream-commit.txt
+          { go version; uname -a; docker info --format 'Cgroup: {{.CgroupVersion}}'; } > results/environment.txt
+          test "$(docker info --format '{{.CgroupVersion}}')" = "2"
+          bash -n scripts/run-phase4.sh
+      - name: Compare real client under both memory limits and freelist formats
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ubuntu:24.04
+          # Independent databases per container; ABBA order limits temporal bias.
+          for spec in a-256-false b-1024-false c-1024-true d-256-true; do
+            IFS=- read -r label mib persisted <<< "$spec"
+            mkdir -p "scratch/work-$label"
+            docker run --rm --network none --memory "${mib}m" --memory-swap "${mib}m" \
+              -e PHASE4_CASE="$spec" -e PHASE4_MEMORY_MIB="$mib" -e PHASE4_PERSIST="$persisted" \
+              -v "$PWD/scratch:/bench:ro" -v "$PWD/scratch/work-$label:/work:rw" \
+              -v "$PWD/results:/out:rw" \
+              -v "$PWD/scripts/run-phase4.sh:/run-phase4.sh:ro" \
+              --entrypoint /bin/bash ubuntu:24.04 /run-phase4.sh
+            rm -f "scratch/work-$label/collector.db"
+          done
+      - name: Upload raw data even if a run fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-filestorage-results
+          path: results/
+          retention-days: 14
