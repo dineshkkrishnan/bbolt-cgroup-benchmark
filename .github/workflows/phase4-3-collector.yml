@@ -32,7 +32,7 @@ jobs:
           PHASE43_RECORDS: ${{ inputs.records }}
         run: |
           set -euo pipefail
-          python3 scripts/phase43_collector.py | tee results/phase43/console.log
+          python3 -u scripts/phase43_collector.py 2>&1 | tee results/phase43/console.log
       - name: Upload raw evidence
         if: always()
         uses: actions/upload-artifact@v4
