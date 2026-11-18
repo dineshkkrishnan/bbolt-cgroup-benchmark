@@ -2,10 +2,21 @@
 
 For https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/52868
 
-**Status:** scaffold only; no benchmark results yet. AI-assisted initial implementation; independently review before publishing.
+**Status:** Initial Ubuntu startup benchmark completed on 2026-11-18. These are warm/unspecified-cache startup measurements, not a cgroup pressure or queue-drain test. AI-assisted initial implementation; review code and methodology independently before publishing findings.
+
+Initial run: https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/runs/44242485254
+
+Median `bolt.Open` time (three repetitions, Go 1.25.0, bbolt 1.5.0, `fsync=true`):
+
+| Records | Database size (approx.) | `NoFreelistSync=true` | Persisted freelist |
+| --- | ---: | ---: | ---: |
+| 10,000 | 35.5 MB | 1.733 ms | 0.097 ms |
+| 50,000 | 110 MB | 9.987 ms | 0.087 ms |
+
+Major faults were zero in all runs. These results are not evidence of I/O thrashing under cgroup memory limits.
 
 ## Requirements
-Linux, Go >=1.23, network access to download bbolt v1.5.0, and Docker/Podman for cgroup-controlled runs. Use a disposable scratch directory. Benchmark creates potentially multi-GB files.
+Linux, Go >=1.25, network access to download bbolt v1.5.0. Docker/Podman or a delegated Linux cgroup is needed only for cgroup-controlled runs; preliminary startup tests run on GitHub Actions without Docker. Use a disposable scratch directory. Benchmark creates potentially multi-GB files.
 
 ## Build
 ```sh
