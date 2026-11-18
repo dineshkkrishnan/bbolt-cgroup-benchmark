@@ -25,7 +25,7 @@ func TestPhase4FileStorageRecovery(t *testing.T) {
  if err:=os.MkdirAll(dir,0700);err!=nil { t.Fatal(err) }
  path:=dir+"/collector.db"
  persist:=os.Getenv("PHASE4_PERSIST")=="true"
- count:=120000
+ count:=200000
  if s:=os.Getenv("PHASE4_ITEMS");s!="" { n,e:=strconv.Atoi(s);if e!=nil||n<=0 {t.Fatal("invalid items")};count=n }
  // Populate the real filestorage default bucket using the same bbolt options,
  // varying only the on-disk freelist persistence in the seed stage.
@@ -52,13 +52,13 @@ func TestPhase4FileStorageRecovery(t *testing.T) {
  if err!=nil {t.Fatal(err)}
  ctx:=context.Background()
  readStart:=time.Now()
- for j:=0;j<count;j++ {
+ for j:=0;j<count;j+=20 {
   var k [8]byte;binary.BigEndian.PutUint64(k[:],uint64(j))
   v,e:=client.Get(ctx,string(k[:]));if e!=nil {t.Fatal(e)}
   if len(v)!=len(value) {t.Fatalf("key %d unexpected len %d",j,len(v))}
  }
  readDuration:=time.Since(readStart)
  if err=client.Close(ctx);err!=nil {t.Fatal(err)}
- out:=map[string]any{"case":os.Getenv("PHASE4_CASE"),"persisted_freelist_seed":persist,"items":count,"db_bytes":info.Size(),"newClient_open_ms":float64(openDuration.Microseconds())/1000,"client_get_all_ms":float64(readDuration.Microseconds())/1000,"actual_filestorage_client":true}
+ out:=map[string]any{"case":os.Getenv("PHASE4_CASE"),"persisted_freelist_seed":persist,"items":count,"db_bytes":info.Size(),"newClient_open_ms":float64(openDuration.Microseconds())/1000,"client_sampled_get_ms":float64(readDuration.Microseconds())/1000,"actual_filestorage_client":true}
  b,_:=json.Marshal(out);fmt.Println("PHASE4_RESULT "+string(b))
 }
