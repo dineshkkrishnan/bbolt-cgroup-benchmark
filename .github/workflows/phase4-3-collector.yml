@@ -1,0 +1,42 @@
+name: Phase 4.3 real Collector queue pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: Number of OTLP log records to queue
+        required: false
+        default: '5000'
+
+permissions:
+  contents: read
+
+jobs:
+  collector-queue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare runtime and image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase43
+          python3 -m py_compile scripts/phase43_collector.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker image inspect otel/opentelemetry-collector-contrib:0.140.0 --format '{{.Id}}' > results/phase43/image-id.txt
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase43/environment.txt
+      - name: Populate real persistent queue and test restarts
+        shell: bash
+        env:
+          PHASE43_RECORDS: ${{ inputs.records }}
+        run: |
+          set -euo pipefail
+          python3 scripts/phase43_collector.py | tee results/phase43/console.log
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-3-collector-queue-results
+          path: results/phase43/
+          retention-days: 14
