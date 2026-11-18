@@ -75,6 +75,12 @@ def stop_collector(name):
     cmd("docker", "stop", "-t", "15", name, check=False)
     cmd("docker", "rm", "-f", name, check=False)
 
+def allow_snapshot_copy(path):
+    """Fix container-owned queue files without changing database contents."""
+    cmd("docker", "run", "--rm", "--network", "none", "--user", "0:0",
+        "-v", f"{path}:/data:rw", "--entrypoint", "/bin/chmod",
+        "ubuntu:24.04", "-R", "a+rwX", "/data")
+
 def queue_bytes(path):
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
@@ -122,6 +128,7 @@ def main():
         report["records_ingested"] = emit()
         time.sleep(3)
         stop_collector(name)
+        allow_snapshot_copy(seed)
         report["seed_queue_bytes"] = queue_bytes(seed)
         report["rejected_export_requests"] = state["rejected_requests"]
         if report["seed_queue_bytes"] == 0:
