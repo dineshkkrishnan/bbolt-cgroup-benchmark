@@ -89,3 +89,14 @@ Run the [Phase 3.3 comparison workflow](https://github.com/dineshkkrishnan/bbolt
 The workflow executes four independent Docker containers in ABBA order (256, 1024, 1024, 256 MiB), with swap capped at the same limit. Each container generates its own 200K-record bbolt database within its cgroup, then runs two random and two sequential read tests (three full passes each). Pattern order alternates within each container. It collects raw per-run `memory.stat`, `memory.events`, and `io.stat` snapshots and produces `comparison.json` with median read durations and 256/1024 ratios.
 
 **Interpretation:** This is a synthetic memory-limit comparison, not a causal freelist benchmark. The 1 GiB condition may fit the ~400 MiB database, while 256 MiB cannot; compare reclaim/refault and disk-read deltas alongside latency. Container creation and host cache are not isolated across tests, so ABBA order only partially mitigates order effects. Do not claim statistical significance from two containers per limit, and do not post a production Collector performance claim from this pilot alone.
+
+
+## Phase 4: actual upstream `file_storage` client integration pilot
+
+Manually run [Phase 4 workflow](https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/workflows/phase4-filestorage.yml) on `main`. Download `bbolt-phase4-filestorage-results`.
+
+Unlike Phases 1–3, this compiles an opt-in test **inside the upstream OpenTelemetry Collector Contrib `extension/storage/filestorage` package** from a pinned-in-results upstream Git checkout. The test calls the package's real `newClient` (which invokes read-write `bbolt.Open` and creates the default bucket) and `client.Get`. The seed database uses the actual default bucket, a 200K-item dataset, and the same bbolt configuration, varying only whether the seed persists the freelist. The real `newClient` always uses `NoFreelistSync=true`, matching upstream source.
+
+Four independent 256/1024 MiB Docker runs cover both seed freelist modes. Each run collects cgroup `memory.stat`, `memory.events`, `io.stat`, peak memory, database size, measured `newClient` startup time, and sampled `Get` duration. Results include the upstream Git SHA.
+
+**Scope and limitations:** This exercises the real extension client code, but **not** the Collector service or persistent queue, nor a realistic churned freelist. Seeding is a synthetic, append-only workload. There is only one run per cell; no causal/statistical conclusion is warranted. Seed generation is inside the constrained container and may be slow or fail at 256 MiB. Compilation happens outside the cgroup to avoid conflating Go compiler memory with the runtime. The workflow is opt-in and not yet validated on a runner. Do not publish a maintainer performance claim until the workflow runs and raw data are reviewed.
