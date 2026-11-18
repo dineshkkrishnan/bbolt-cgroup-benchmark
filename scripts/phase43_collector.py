@@ -54,7 +54,9 @@ def wait_health(timeout=90):
         if get("http://127.0.0.1:13133/") == 200:
             return time.monotonic() - start
         time.sleep(0.1)
-    raise RuntimeError("Collector did not become healthy")
+    details = cmd("docker", "logs", "phase43-collector", check=False)
+    status = cmd("docker", "inspect", "-f", "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}", "phase43-collector", check=False)
+    raise RuntimeError("Collector did not become healthy: " + status.stdout + "\\n" + details.stdout[-5000:] + details.stderr[-5000:])
 
 def run_collector(name, directory, memory_mib):
     for folder in [directory, *[x for x in directory.rglob("*") if x.is_dir()]]:
@@ -127,6 +129,7 @@ def main():
         # Restore identical queue state before each restart. Run warm then advisory-cold,
         # alternating memory limit. Recovery delivery is deliberately blocked while timing.
         for memory, cache in [(1024,"warm"),(256,"cold"),(256,"warm"),(1024,"cold")]:
+            print(f"Starting recovery: memory={memory}MiB cache={cache}", flush=True)
             directory = ROOT/f"recovery-{memory}-{cache}"
             if directory.exists():
                 shutil.rmtree(directory)
@@ -141,8 +144,8 @@ def main():
             else:
                 advised = advise_cold(directory)
             start = time.monotonic()
-            run_collector(name, directory, memory)
             try:
+                run_collector(name, directory, memory)
                 health_s = wait_health()
                 time.sleep(3)
                 inspection = cmd("docker", "exec", name, "sh", "-c",
@@ -156,7 +159,12 @@ def main():
                     "wall_to_health_s":time.monotonic()-start-3,
                     "queue_bytes":queue_bytes(directory),
                     "container_running":cmd("docker","inspect","-f","{{.State.Running}}",name).stdout.strip()})
+            except Exception as exc:
+                report["runs"].append({"memory_mib":memory,"cache_protocol":cache,"error":str(exc)})
+                raise
             finally:
+                diagnostics = cmd("docker", "logs", name, check=False)
+                (RESULTS/f"{memory}-{cache}.logs").write_text(diagnostics.stdout+"\n"+diagnostics.stderr)
                 stop_collector(name)
         # One separate delivery check, from the original seed.
         recovery = ROOT/"delivery"
