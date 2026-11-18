@@ -1,0 +1,62 @@
+name: Phase 4.6 direct bbolt Open on real Collector queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: OTLP records to persist
+        required: false
+        default: '200000'
+      repeats:
+        description: Direct bbolt opens per condition
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  direct-open:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build standalone bbolt open probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase46
+          cd phase4
+          go mod init phase46probe
+          go get go.etcd.io/bbolt@v1.4.3
+          CGO_ENABLED=0 go build -o phase46-open phase46_open.go
+          ./phase46-open --help > ../results/phase46/probe-help.txt 2>&1 || true
+          go version > ../results/phase46/go-version.txt
+          go list -m all > ../results/phase46/modules.txt
+      - name: Prepare Collector and helper images
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/phase46_direct_open.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker pull ubuntu:24.04
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase46/environment.txt
+          docker image inspect otel/opentelemetry-collector-contrib:0.140.0 --format '{{.Id}}' > results/phase46/image-id.txt
+      - name: Seed real queue and measure direct bbolt opens
+        shell: bash
+        env:
+          PHASE46_RECORDS: ${{ inputs.records }}
+          PHASE46_REPEATS: ${{ inputs.repeats }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase46_direct_open.py 2>&1 | tee results/phase46/console.log
+      - name: Upload experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-6-direct-open-results
+          path: results/phase46/
+          retention-days: 14
