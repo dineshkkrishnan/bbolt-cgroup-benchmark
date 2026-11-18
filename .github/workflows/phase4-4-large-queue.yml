@@ -1,0 +1,43 @@
+name: Phase 4.4 large real Collector queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: Number of individual OTLP log records (100 per request)
+        required: false
+        default: '200000'
+
+permissions:
+  contents: read
+
+jobs:
+  large-queue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase44
+          python3 -m py_compile scripts/phase44_collector.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker pull ubuntu:24.04
+          docker image inspect otel/opentelemetry-collector-contrib:0.140.0 --format '{{.Id}}' > results/phase44/image-id.txt
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase44/environment.txt
+      - name: Seed large persistent queue, restart, and verify delivery
+        shell: bash
+        env:
+          PHASE44_RECORDS: ${{ inputs.records }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase44_collector.py 2>&1 | tee results/phase44/console.log
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-4-large-queue-results
+          path: results/phase44/
+          retention-days: 14
