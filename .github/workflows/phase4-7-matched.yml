@@ -1,0 +1,62 @@
+name: Phase 4.7 matched synthetic vs real bbolt direct open
+
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: Real Collector OTLP records
+        required: false
+        default: '200000'
+      repeats:
+        description: Repetitions per database and condition
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  matched-open:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: Build identical-version probe and synthetic generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase47
+          cd phase4
+          go mod init phase47probe
+          go get go.etcd.io/bbolt@v1.4.3
+          CGO_ENABLED=0 go build -o phase47-open phase46_open.go
+          CGO_ENABLED=0 go build -o phase47-generate phase47_generate.go
+          go version > ../results/phase47/go-version.txt
+          go list -m all > ../results/phase47/modules.txt
+      - name: Prepare environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/phase47_compare.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker pull ubuntu:24.04
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase47/environment.txt
+      - name: Run matched direct-open comparisons
+        shell: bash
+        env:
+          PHASE47_RECORDS: ${{ inputs.records }}
+          PHASE47_REPEATS: ${{ inputs.repeats }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase47_compare.py 2>&1 | tee results/phase47/console.log
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbolt-phase4-7-matched-results
+          path: results/phase47/
+          retention-days: 14
