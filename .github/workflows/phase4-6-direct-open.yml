@@ -21,9 +21,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.25'
+          cache: false
       - name: Build standalone bbolt open probe
         shell: bash
         run: |
@@ -60,3 +61,4 @@ jobs:
           name: bbolt-phase4-6-direct-open-results
           path: results/phase46/
           retention-days: 14
+          if-no-files-found: error
