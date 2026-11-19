@@ -31,7 +31,6 @@ func main() {
   result["freelist_free_pages"]=stats.FreePageN
   result["freelist_pending_pages"]=stats.PendingPageN
   result["freelist_inuse_bytes"]=stats.FreelistInuse
-  result["freelist_alloc_bytes"]=stats.FreelistAlloc
   if closeErr:=db.Close(); closeErr!=nil {result["close_error"]=closeErr.Error()}
  }
  encoder:=json.NewEncoder(os.Stdout)
