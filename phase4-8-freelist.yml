@@ -1,0 +1,33 @@
+name: Phase 4.8 Freelist Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-smoke-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Compile Phase 4.8
+        run: |
+          mkdir -p /tmp/phase48-build
+          cp phase4/phase48_probe.go /tmp/phase48-build/main.go
+          cd /tmp/phase48-build
+          go mod init phase48probe
+          go get go.etcd.io/bbolt@v1.4.3
+          go build -o phase48-probe .
+
+      - name: Verify probe
+        run: |
+          /tmp/phase48-build/phase48-probe --help
