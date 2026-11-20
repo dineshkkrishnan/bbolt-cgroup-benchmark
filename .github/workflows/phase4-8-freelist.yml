@@ -1,36 +1,56 @@
-
 name: Phase 4.8 Freelist Probe
 
 on:
   workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'Repeated trials per arm/cache combination'
+        default: '5'
+        required: false
+      keys:
+        description: 'Synthetic database key count'
+        default: '20000'
+        required: false
 
 permissions:
   contents: read
 
 jobs:
-  compile-and-smoke-test:
+  benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: experiment/freelist-open-faults
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
           cache: false
-
-      - name: Compile Phase 4.8
+      - name: Compile probe and generator
+        shell: bash
         run: |
-          mkdir -p /tmp/phase48-build
+          set -euo pipefail
+          mkdir -p /tmp/phase48-build results/phase48
           cp phase4/phase48_probe.go /tmp/phase48-build/main.go
           cd /tmp/phase48-build
           go mod init phase48probe
           go get go.etcd.io/bbolt@v1.4.3
-          go build -o phase48-probe .
-
-      - name: Verify probe
+          go build -o "$GITHUB_WORKSPACE/phase4/phase48-probe" .
+          cp "$GITHUB_WORKSPACE/phase4/phase47_generate.go" generator.go
+          go build -o "$GITHUB_WORKSPACE/phase4/phase48-generate" generator.go
+      - name: Run repeated freelist measurements
+        shell: bash
+        env:
+          PHASE48_REPEATS: ${{ inputs.repeats || '5' }}
+          PHASE48_KEYS: ${{ inputs.keys || '20000' }}
         run: |
-          /tmp/phase48-build/phase48-probe --help
+          set -euo pipefail
+          python3 -u scripts/phase48_run.py | tee results/phase48/console.log
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase48-freelist-results
+          path: results/phase48/
+          retention-days: 14
