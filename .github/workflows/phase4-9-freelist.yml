@@ -1,0 +1,56 @@
+name: Phase 4.9 Freelist Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'Repeated trials per arm/cache combination'
+        default: '20'
+        required: false
+      keys:
+        description: 'Synthetic database key count'
+        default: '20000'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/freelist-open-faults
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: Compile probe and generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/phase48-build results/phase48
+          cp phase4/phase48_probe.go /tmp/phase48-build/main.go
+          cd /tmp/phase48-build
+          go mod init phase48probe
+          go get go.etcd.io/bbolt@v1.4.3
+          go build -o "$GITHUB_WORKSPACE/phase4/phase48-probe" .
+          cp "$GITHUB_WORKSPACE/phase4/phase47_generate.go" generator.go
+          go build -o "$GITHUB_WORKSPACE/phase4/phase48-generate" generator.go
+      - name: Validate freelist metadata and run repeated measurements
+        shell: bash
+        env:
+          PHASE48_REPEATS: ${{ inputs.repeats || '20' }}
+          PHASE48_KEYS: ${{ inputs.keys || '20000' }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase48_run.py | tee results/phase48/console.log
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase49-validated-freelist-results
+          path: results/phase48/
+          retention-days: 14
