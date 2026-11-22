@@ -54,8 +54,7 @@ func main() {
    })
   });if err!=nil{panic(err)}
   stat,err:=os.Stat(*path);if err!=nil{panic(err)}
-  out:=map[string]interface{}{"keys":keys,"content_sha256":hex.EncodeToString(h.Sum(nil)),"file_bytes":stat.Size(),"txid":db.Info().PageSize}
-  delete(out,"txid")
+  out:=map[string]interface{}{"keys":keys,"content_sha256":hex.EncodeToString(h.Sum(nil)),"file_bytes":stat.Size()}
   if err:=json.NewEncoder(os.Stdout).Encode(out);err!=nil{panic(err)}
   return
  }
