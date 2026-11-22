@@ -7,18 +7,51 @@ from pathlib import Path
 import random
 import shutil
 import statistics
+import struct
 import subprocess
 
 ROOT=Path("results/phase48")
 ROOT.mkdir(parents=True,exist_ok=True)
 BIN=Path("phase4/phase48-probe").resolve()
 GEN=Path("phase4/phase48-generate").resolve()
-REPEATS=int(os.environ.get("PHASE48_REPEATS","5"))
+REPEATS=int(os.environ.get("PHASE48_REPEATS","20"))
 KEYS=int(os.environ.get("PHASE48_KEYS","20000"))
-assert 1 <= REPEATS <= 30
+assert 1 <= REPEATS <= 40
 assert 1000 <= KEYS <= 200000
 def run(*args):
     return subprocess.run([str(x) for x in args],check=True,capture_output=True,text=True).stdout
+def meta_info(path):
+    # bbolt page header: 16 bytes; meta: magic, version, pageSize, flags,
+    # root bucket (16 bytes), freelist, pgid, txid, checksum (FNV-1a 64).
+    with open(path,"rb") as f:
+        first=f.read(4096)
+        if len(first)<96: raise ValueError("truncated bbolt database")
+        pagesize=struct.unpack_from("<I",first,24)[0]
+        if pagesize<1024 or pagesize>65536 or pagesize&(pagesize-1):
+            raise ValueError("invalid bbolt page size")
+        f.seek(0)
+        pages=[f.read(pagesize) for _ in range(2)]
+    candidates=[]
+    for index,p in enumerate(pages):
+        magic,version,ps=struct.unpack_from("<III",p,16)
+        if magic!=0xED0CDAED or version!=2 or ps!=pagesize:
+            raise ValueError(f"invalid bbolt meta page {index}")
+        expected=struct.unpack_from("<Q",p,80)[0]
+        value=14695981039346656037
+        for byte in p[16:80]:
+            value=((value^byte)*1099511628211)&0xFFFFFFFFFFFFFFFF
+        if value!=expected: continue
+        freelist,pgid,txid=struct.unpack_from("<QQQ",p,48)
+        candidates.append({"meta_page":index,"freelist_pgid":freelist,
+                           "high_water_pgid":pgid,"txid":txid,
+                           "page_size":pagesize,"freelist_persisted":freelist!=0xFFFFFFFFFFFFFFFF})
+    if not candidates: raise ValueError("no valid bbolt metadata pages")
+    return max(candidates,key=lambda x:x["txid"])
+
+def inspect(path):
+    logical=json.loads(run(BIN,"--db",path,"--inspect"))
+    return {**logical,**meta_info(path)}
+
 seed=ROOT/"seed.db"
 run(GEN,"--db",seed,"--keys",KEYS,"--value-bytes","1024")
 sources={}
@@ -29,6 +62,16 @@ for arm in ("unsynced","synced"):
     if arm=="synced": args.append("--sync-freelist")
     run(*args)
     sources[arm]=dest
+validation={arm:inspect(path) for arm,path in sources.items()}
+if validation["unsynced"]["freelist_persisted"]:
+    raise AssertionError("unsynced database unexpectedly has a persisted freelist")
+if not validation["synced"]["freelist_persisted"]:
+    raise AssertionError("synced database does not have a persisted freelist")
+for field in ("keys","content_sha256","page_size"):
+    if validation["unsynced"][field]!=validation["synced"][field]:
+        raise AssertionError(f"logical database mismatch in {field}")
+(ROOT/"validation.json").write_text(json.dumps(validation,indent=2)+"\\n")
+print("VALIDATION",json.dumps(validation,indent=2),flush=True)
 libc=ctypes.CDLL(None,use_errno=True)
 POSIX_FADV_DONTNEED=4
 def cache_mode(path,mode):
@@ -68,6 +111,6 @@ report={"repeats":REPEATS,"keys":KEYS,"bbolt_version":"1.4.3",
  "Synthetic database, not production Collector startup",
  "Minor faults are not equivalent to storage reads",
  "No cgroup limits or I/O counters in this phase"],
- "summary":summary,"records":records}
+ "summary":summary,"records":records,"validation":validation}
 (ROOT/"report.json").write_text(json.dumps(report,indent=2)+"\n")
 print("SUMMARY",json.dumps(summary,indent=2),flush=True)
