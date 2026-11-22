@@ -36,9 +36,9 @@ def meta_info(path):
         magic,version,ps=struct.unpack_from("<III",p,16)
         if magic!=0xED0CDAED or version!=2 or ps!=pagesize:
             raise ValueError(f"invalid bbolt meta page {index}")
-        expected=struct.unpack_from("<Q",p,80)[0]
+        expected=struct.unpack_from("<Q",p,72)[0]
         value=14695981039346656037
-        for byte in p[16:80]:
+        for byte in p[16:72]:
             value=((value^byte)*1099511628211)&0xFFFFFFFFFFFFFFFF
         if value!=expected: continue
         freelist,pgid,txid=struct.unpack_from("<QQQ",p,48)
