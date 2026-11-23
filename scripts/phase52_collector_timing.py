@@ -128,11 +128,12 @@ def main():
                     record["docker_cli_s"]=docker_return-started
                     record["docker_started_at_epoch_s"]=started_at(NAME)
                     health_mono=poll_health(timeout=120)
+                    health_epoch=time.time()
                     record["wall_to_health_s"]=health_mono-started
                     record["health_after_docker_cli_s"]=health_mono-docker_return
                     # Host wall clock is compared with Docker's process StartedAt timestamp.
                     # Record the cross-clock value separately rather than assuming exact precision.
-                    record["process_to_health_approx_s"]=time.time()-record["docker_started_at_epoch_s"]
+                    record["process_to_health_approx_s"]=health_epoch-record["docker_started_at_epoch_s"]
                     if record["process_to_health_approx_s"]<0:
                         raise RuntimeError("inconsistent host and Docker start clocks")
                     status=m.cmd("docker","inspect","-f","{{.State.Running}} {{.State.OOMKilled}}",NAME)
