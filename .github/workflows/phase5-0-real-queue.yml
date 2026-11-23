@@ -1,0 +1,58 @@
+name: Phase 5.0 Real Collector Queue Freelist
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: 'OTLP records to generate'
+        default: '200000'
+        required: false
+      repeats:
+        description: 'Trials per arm and cache condition'
+        default: '5'
+        required: false
+permissions:
+  contents: read
+jobs:
+  real-queue-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/freelist-open-faults
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: Build bbolt probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase50 /tmp/phase50-build
+          cp phase4/phase48_probe.go /tmp/phase50-build/main.go
+          cd /tmp/phase50-build
+          go mod init phase50probe
+          go get go.etcd.io/bbolt@v1.4.3
+          CGO_ENABLED=0 go build -o "$GITHUB_WORKSPACE/phase4/phase48-probe" .
+      - name: Prepare Collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/phase50_real_queue.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase50/environment.txt
+      - name: Compare real queue copies
+        shell: bash
+        env:
+          PHASE50_RECORDS: ${{ inputs.records || '200000' }}
+          PHASE50_REPEATS: ${{ inputs.repeats || '5' }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase50_real_queue.py 2>&1 | tee results/phase50/console.log
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase50-real-collector-queue-results
+          path: results/phase50/
+          retention-days: 14
