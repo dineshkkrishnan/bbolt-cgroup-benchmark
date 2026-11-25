@@ -22,3 +22,20 @@ Artifacts (subject to retention):
 - Phase 5.1: https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/runs/45124184131/artifacts/14794569382
 
 Phase 5.2 increases repeats to 20 per arm/cache (80 total) and captures Docker CLI time separately from approximate Collector process-to-health latency. Its artifact retention is set to 90 days; GitHub repository policies may impose a shorter maximum. No automated commit of raw results is configured.
+
+
+## Phase 5.3 — persistent queue recovery (2026-11-25)
+
+Run: https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/runs/45549160949
+
+Artifact: https://github.com/dineshkkrishnan/bbolt-cgroup-benchmark/actions/runs/45549160949/artifacts/14992039203 (GitHub reports expiry 2027-02-23).
+
+Collector `otel/opentelemetry-collector-contrib:0.140.0`; 200,000 OTLP log records per trial; five repetitions per arm/cache; 1024 MiB container. All 20 trials succeeded with exactly 200,000 unique record IDs, **zero missing, zero unexpected, zero duplicates**. Both freelist variants had 2,001 logical bbolt keys and identical SHA-256 `a445357b3fbf0a915a01f40040601ddbed6b1c6ac58e59316655e7876baa458b`; file size 357,167,104 bytes. Unsynced freelist metadata sentinel vs synced persisted freelist confirmed.
+
+| Cache | Unsynced median first observed export | Synced median first observed export | Unsynced median last observed export | Synced median last observed export |
+| --- | ---: | ---: | ---: | ---: |
+| Warm | 123.468 ms | 105.427 ms | 4.319 s | 4.333 s |
+| Advisory-cold | 324.426 ms | 130.341 ms | 9.276 s | 9.218 s |
+
+**Interpretation:** Under advisory-cold conditions, persisted freelist reduced time to first observed export by about 194 ms (2.49× faster). The time to deliver all 200,000 unique IDs was similar between variants; thus no substantial overall drain-throughput improvement was demonstrated. The sink's `last_delivery_epoch` is updated after handling HTTP requests, not from an internal Collector queue-depth metric; therefore 'last observed export' is a proxy for drain completion. Timestamp differences use Docker container start and host wall clock; cache eviction is advisory, not guaranteed. One runner and five repetitions per condition are not sufficient to generalize production effect. The benchmark uses an error-returning sink during seeding, then an accepting mock sink during recovery. The validation is of an instrumented synthetic workload using a real Collector and persistent queue, not production reliability.
+
