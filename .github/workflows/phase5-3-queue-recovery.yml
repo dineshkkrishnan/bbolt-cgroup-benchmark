@@ -1,0 +1,64 @@
+name: Phase 5.3 Queue Recovery
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: 'OTLP records to persist in queue'
+        required: false
+        default: '200000'
+      repeats:
+        description: 'Trials per freelist and cache condition'
+        required: false
+        default: '5'
+      memory_mib:
+        description: 'Collector container memory limit (MiB)'
+        required: false
+        default: '1024'
+permissions:
+  contents: read
+jobs:
+  collector-restart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/freelist-open-faults
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: Build bbolt validation probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/phase53 /tmp/phase53-build
+          cp phase4/phase48_probe.go /tmp/phase53-build/main.go
+          cd /tmp/phase53-build
+          go mod init phase53probe
+          go get go.etcd.io/bbolt@v1.4.3
+          CGO_ENABLED=0 go build -o "$GITHUB_WORKSPACE/phase4/phase48-probe" .
+      - name: Prepare real Collector image and runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/phase53_queue_recovery.py
+          docker pull otel/opentelemetry-collector-contrib:0.140.0
+          docker pull ubuntu:24.04
+          docker info --format 'Cgroup version: {{.CgroupVersion}}' > results/phase53/environment.txt
+      - name: Run full Collector restart benchmark
+        shell: bash
+        env:
+          PHASE53_RECORDS: ${{ inputs.records || '200000' }}
+          PHASE53_REPEATS: ${{ inputs.repeats || '5' }}
+          PHASE53_MEMORY_MIB: ${{ inputs.memory_mib || '1024' }}
+        run: |
+          set -euo pipefail
+          python3 -u scripts/phase53_queue_recovery.py 2>&1 | tee results/phase53/console.log
+      - name: Upload validation and restart evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase53-collector-restart-results
+          path: results/phase53/
+          retention-days: 90
